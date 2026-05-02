@@ -41,6 +41,19 @@ uv run pytest tests/test_train_bpe.py
 uv run pytest -v
 ```
 
+### 测试用例
+
+```bash
+# 1. BPE 训练测试
+uv run pytest tests/test_train_bpe.py
+
+# 2. Tokenizer encode decode 测试
+# 该测试应当建立在 1. BPE 训练测试 结束后产生的 vocab 和 merges 的基础上进行
+uv run pytest tests/test_tokenizer.py
+```
+
+
+
 ## API 参考
 
 ### train_bpe()

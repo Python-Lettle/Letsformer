@@ -1,4 +1,4 @@
-
+import regex
 # ==============================
 # BPE Tokenizer Utils
 # ==============================
@@ -38,3 +38,20 @@ def maxInDict(d: dict) -> tuple[tuple[bytes], int]:
             # 选择字典序最大的那个 pair
             max_pair = max(max_pair, k)
     return max_pair, max_value
+
+def pre_tokenize(data: str, special_tokens: list[str] = []) -> list[bytes]:
+    # 1 处理 special tokens
+    escaped = [regex.escape(sp_token) for sp_token in special_tokens]
+    pattern = '(' + '|'.join(escaped) + ')'
+    parts: list[str] = regex.split(pattern, data)
+
+    # 2 利用正则提取单词
+    result: list[bytes] = []
+    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    for part in parts:
+        for word in regex.findall(PAT, part):
+            word_bytes: bytes = word.encode("utf-8")
+            result.append(word_bytes)
+            # bytes_list = [bytes([x]) for x in word_bytes]
+
+    return result
