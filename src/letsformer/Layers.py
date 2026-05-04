@@ -3,8 +3,8 @@ import torch
 import torch.nn as nn
 from jaxtyping import Float, Int
 from torch import Tensor
-from einops import rearrange, einsum, reduce
-from cs336_basics.functions import silu, scaled_dot_product_attention
+from einops import rearrange, einsum
+from letsformer.functions import silu, scaled_dot_product_attention
 
 class Linear(nn.Module):
     def __init__(self, in_features: int, out_features: int, device: torch.device | None = None, dtype: torch.dtype | None = None, weight: Tensor | None = None):
@@ -195,5 +195,52 @@ class RotaryPositionalEmbedding(nn.Module):
         x2_rot = sin * x1 + cos * x2
         result = torch.stack((x1_rot, x2_rot), dim=-1).flatten(-2)
         return result
+
+class MultiHeadSelfAttention(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, rope_embedding=None, device=None):
+        super().__init__()
+
+        self.d_model = d_model
+        self.num_heads = num_heads
+
+        self.d_k: int = d_model // num_heads
+        self.d_v: int = self.d_k
+
+        # 构造多头 Q K V 矩阵, 这里使用一个大矩阵进行矩阵乘法, 效率优于分为多头小矩阵
+        self.W_Q = Linear(d_model, d_model)
+        self.W_K = Linear(d_model, d_model)
+        self.W_V = Linear(d_model, d_model)
+        self.W_O = Linear(d_model, d_model)
+
+        self.rope_embedding = rope_embedding
+
+    def forward(self, X: Float[Tensor, " ... sequence_length d_in"]) -> Float[Tensor, " ... sequence_length d_out"]:
+        seq_len = X.shape[-2]
+
+        # 1. 线性投影 得到 Q K V (所有头在一起)
+        Q = self.W_Q(X)
+        K = self.W_K(X)
+        V = self.W_V(X)
+
+        # 2. 变换为多头形式 (batch_size, seq_len, d_model) -> (batch_size, seq_len, num_heads, d_k)
+        Q = rearrange(Q, "... seq_len (num_heads d_k) -> ... num_heads seq_len d_k", num_heads=self.num_heads)
+        K = rearrange(K, "... seq_len (num_heads d_k) -> ... num_heads seq_len d_k", num_heads=self.num_heads)
+        V = rearrange(V, "... seq_len (num_heads d_v) -> ... num_heads seq_len d_v", num_heads=self.num_heads)
+        
+        # 2.5 对 Q K 应用 RoPE (如果构建类时给出了 RotaryPositionalEmbedding)
+        if self.rope_embedding:
+            Q = self.rope_embedding(Q)
+            K = self.rope_embedding(K)
+
+        # 3. 使用因果编码计算缩放点积注意力
+        mask = torch.tril(torch.ones(seq_len, seq_len))
+
+        multi_head_output: Float[Tensor, " ... queries d_v"] = scaled_dot_product_attention(Q, K, V, mask)
+        multi_head_output = rearrange(multi_head_output, "... num_heads seq_len d_v -> ... seq_len (num_heads d_v)")
+
+        output = self.W_O(multi_head_output)
+
+        return output
+
 
 
