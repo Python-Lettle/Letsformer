@@ -242,5 +242,32 @@ class MultiHeadSelfAttention(nn.Module):
 
         return output
 
+class TransformerBlock(nn.Module):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, rope_embedding=None, device=None) -> None:
+        '''
+            d_model：  int，表示 Transformer 块输入的维度
+            num_heads：int，表示多头自注意力中使用的头的数量
+            d_ff：     int，表示位置感知前馈内层的维度。
+        '''
+        super().__init__()
 
+        self.multihead_attention = MultiHeadSelfAttention(d_model, num_heads, rope_embedding=rope_embedding, device=device)
+        self.ffn = PWFFN(d_ff, d_model, device=device)
+        self.norm1 = RMSNorm(d_model, device=device)
+        self.norm2 = RMSNorm(d_model, device=device)
+        
+    def forward(self, X: Float[Tensor, "... seq_len d_model"]) -> Float[Tensor, "... seq_len d_model"]:
+        # 1. Pre-norm
+        _X = self.norm1(X)
+        # 2. Causal Multi-Head Self-Attention
+        _X = self.multihead_attention(_X)
+        # 3. X1 = X + multi_head_output
+        X1 = X + _X
+        # 4. Pre-norm
+        __X = self.norm2(X1)
+        # 5. Position-Wise Feed-Forward
+        __X = self.ffn(__X)
+        # 6. Output = X1 + PWFFN(X1)
+        output = X1 + __X
+        return output
 
