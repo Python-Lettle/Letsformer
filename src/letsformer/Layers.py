@@ -138,5 +138,62 @@ class PWFFN(nn.Module):
 
         return FFNx
         
+class RotaryPositionalEmbedding(nn.Module):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, token_positions: Int[Tensor, " ... seq_len"], device=None):
+        '''
+            构建RoPE模块, 并根据需要创建缓冲区
+            theta: float,       RoPE 的 theta 值
+            d_k: int,           query 向量和 key 向量的维度
+            max_seq_len: int,   输入的最大序列长度
+            device: torch.device | None = None Device to store the buffer on
+        '''
+        super().__init__()
+        
+        self.register_buffer(
+            "angle_cache",
+            RotaryPositionalEmbedding.init_cache(max_seq_len, d_k, theta), persistent=False
+        )
+
+        self.token_positions = token_positions
+
+    @staticmethod
+    def init_cache(max_seq_len: int, d_k: int, theta: float) -> tuple[Float[torch.Tensor, "half_dim"], Float[torch.Tensor, "half_dim"]]:
+        '''
+            初始化 RoPE 缓冲区
+            max_seq_len: int,   输入的最大序列长度
+            d_k: int,           query 向量和 key 向量的维度
+            theta: float,       RoPE 的 theta 值
+            device: torch.device | None = None Device to store the buffer on
+        '''
+        # 计算 theta 值的幂次
+        # theta_pow: (d_k,)
+        theta_pow = theta ** (-torch.arange(0, d_k, 2) / d_k)
+
+        # 生成 i_range: (max_seq_len, 1)
+        i_range = torch.arange(max_seq_len).unsqueeze(-1)
+
+        # 计算 freqs: (max_seq_len, d_k)
+        freqs = torch.mul(theta_pow, i_range)       # freqs = theta^( -(2k-2) / d_k)
+
+        cos, sin = torch.cos(freqs), torch.sin(freqs)
+        return torch.stack((cos, sin))
+
+    def forward(self, x: Float[Tensor, " ... seq_len d_k"]) -> torch.Tensor:
+        '''
+            处理一个形状为 (..., seq_len, d_k) 的输入张量，并返回一个相同形状的张量。
+            请注意，你应该能够处理具有任意数量的批量维度的 x。
+            你应该假设 token 位置是一个形状为 (..., seq_len) 的 Tensor，用于指定 x 在序列维度上的标记位置。
+        '''
+        # 将输入按照奇偶位置切片
+        x1 = x[..., ::2]
+        x2 = x[..., 1::2]
+        # 按照 token_positions 获取相应 cos sin
+        cos, sin = self.angle_cache[:, self.token_positions, :]
+
+        # 将旋转应用在 x pair 上
+        x1_rot = cos * x1 - sin * x2
+        x2_rot = sin * x1 + cos * x2
+        result = torch.stack((x1_rot, x2_rot), dim=-1).flatten(-2)
+        return result
 
 
