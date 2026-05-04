@@ -9,7 +9,7 @@ dependencies = [
     "numpy>=2.4",
     "torch~=2.11.0",
     "regex>=2026.3.32", # more powerful regex than the builtin `re` module
-
+    "jaxtyping>=0.3.9",
 ]
 
 [dependency-groups]
