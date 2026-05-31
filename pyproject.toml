@@ -10,6 +10,8 @@ dependencies = [
     "torch~=2.11.0",
     "regex>=2026.3.32", # more powerful regex than the builtin `re` module
     "jaxtyping>=0.3.9",
+    "rich>=15.0.0",
+    "matplotlib>=3.10.9",
 ]
 
 [dependency-groups]
@@ -20,6 +22,16 @@ dev = [
 [build-system]
 requires = ["uv_build>=0.11.0,<0.12.0"]
 build-backend = "uv_build"
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.uv.sources]
+torch = [
+  { index = "pytorch-cu128", marker = "sys_platform == 'linux' or sys_platform == 'win32'" },
+]
 
 [tool.uv.build-backend]
 module-name = "letsformer"

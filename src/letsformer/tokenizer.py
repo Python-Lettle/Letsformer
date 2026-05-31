@@ -1,8 +1,11 @@
-from letsformer.util import merge_token, maxInDict, pre_tokenize
+from letsformer.util import merge_token, maxInDict, pre_tokenize, get_pairs
+from letsformer.debug import console, DEBUG
 import os
 import regex
 import pickle
 from collections.abc import Iterable, Iterator
+
+PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 
 def train_bpe(
     input_path: str | os.PathLike,
@@ -40,6 +43,8 @@ def train_bpe(
     # data: 输入的全部文本数据
     data: str = file.read()
     
+    if DEBUG: console.print("(train_bpe) Input data size:", len(data))
+
     # ----------------------------------------
     # 1 Vocabulary initialization
     # ----------------------------------------
@@ -66,14 +71,22 @@ def train_bpe(
     parts: list[str] = regex.split('|'.join(map(regex.escape,special_tokens)),data)
 
     # 2.2 利用正则提取单词
-    PAT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-    for part in parts:
-        for word in regex.findall(PAT, part):
-            word_bytes: list[bytes] = word.encode("utf-8")
+    parts_len = len(parts)
+    for i in range(parts_len):
+        part = parts[i]
+        all_word:list[str] = regex.findall(PAT, part)
+        all_word_len = len(all_word)
+        for j in range(all_word_len):
+            word_bytes: list[bytes] = all_word[j].encode("utf-8")
             bytes_list = [bytes([x]) for x in word_bytes]
             # 顺便统计 token 出现频率，保存到 token_frequency
             token_frequency[tuple(bytes_list)] = token_frequency.get(tuple(bytes_list), 0) + 1
 
+        if DEBUG and i % 1000 == 0:
+            console.print(f"(train_bpe) Process token parts {i}/{parts_len}")
+
+        
+    if DEBUG: console.print(r"(train_bpe) Token frequency size:", len(token_frequency))
     # ----------------------------------------
     # 3 Merge
     # ----------------------------------------
@@ -88,6 +101,8 @@ def train_bpe(
         for i in range(len(token) - 1):
             new_pair: tuple = (token[i], token[i+1])
             pairs[new_pair] = pairs.get(new_pair, 0) + token_frequency[token]
+
+    if DEBUG: console.print("(train_bpe) Pairs size:", len(pairs))
 
     # 3.2 开始 merge
     round = 1       # 用于输出调试信息，无实际意义
@@ -137,6 +152,14 @@ def train_bpe(
         merges.append(max_pair)
         round += 1
 
+        if DEBUG:
+            if round % 100 == 0:
+                console.print(f"(train_bpe) Round {round}: pairs size: {len(pairs)}, vocab size: {len(vocab)} / {vocab_size}")
+    if DEBUG:
+        console.print("(train_bpe) Finish!")
+        console.print("(train_bpe) Vocab size:", len(vocab))
+        console.print("(train_bpe) Merges size:", len(merges))
+
     return vocab, merges
 
 class TokenIterator(Iterator[int]):
@@ -182,6 +205,8 @@ class BPETokenizer:
         self.merges: list[tuple[bytes, bytes]] = merges
         self.merges: tuple[tuple[bytes, bytes]] = tuple(self.merges)    # tuple 加速遍历
 
+        self.bpe_ranks = dict(zip(self.merges, range(len(self.merges))))
+
         # 构建一个快表
         self.merges_dict: dict[tuple[bytes, bytes], bytes] = {}
         for merge in self.merges:
@@ -191,6 +216,13 @@ class BPETokenizer:
         # 给 special tokens 按长度排序
         self.special_tokens.sort(key=lambda x: len(x), reverse=True)
         self.special_tokens_bytes: list[bytes] = [x.encode("utf-8") for x in self.special_tokens]
+
+        # 保证 special tokens 都在 vocabulary 中
+        for token_bytes in self.special_tokens_bytes:
+            if token_bytes not in self.vocab_bytes_int:
+                new_id = len(self.vocab_int_bytes)
+                self.vocab_int_bytes[new_id] = token_bytes
+                self.vocab_bytes_int[token_bytes] = new_id
 
     @classmethod
     def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None):
@@ -213,32 +245,29 @@ class BPETokenizer:
         将输入文本编码为一系列 token IDs
         '''
         # 把输入的字符串分割成 pre-token, 例如: [b'the', b' cat', b' ate']
-        pre_tokens = pre_tokenize(text, special_tokens=self.special_tokens)
+        pre_tokens: list[bytes] = pre_tokenize(text, special_tokens=self.special_tokens)
         
-        # 遍历处理每一个 pre-token, 得到 encoded tokens
+        # 贪心策略：每轮选择当前优先级最高的字节对进行 merge
         encoded_tokens: list[int] = []
         for token_bytes in pre_tokens:      # 遍历每个 token (bytes)
-            # 如果是 special token
+            # 如果是 special token, 直接进行映射
             if token_bytes in self.special_tokens_bytes:
                 encoded_tokens.append(self.vocab_bytes_int[token_bytes])
                 continue
             
             # 不是 special token, 准备进行 merge
             token_bytes_list = [bytes([x]) for x in token_bytes]    # 将一个 token 拆成原始字符, 例如: b'egg' -> [b'e', b'g', b'g']
-            flag = True
-            while flag:
-                flag = False        # 如果本次循环没有进行 merge 操作, 即本次循环已经完成了全部 merge
-                for merge in self.merges:   # 当前检查的 merge
-                    i = 0
-                    while i < len(token_bytes_list) - 1:
-                        if token_bytes_list[i] == merge[0] and token_bytes_list[i+1] == merge[1]:
-                            # 在 token 中找到了当前的 merge, 对 token 进行修改
-                            token_bytes_list[i] = self.merges_dict[merge]
-                            del token_bytes_list[i+1]
-                            flag = True
-                        else:
-                            # 位置 i 不是该 merge 项
-                            i += 1
+
+            while len(token_bytes_list) > 1:
+                pairs = get_pairs(token_bytes_list)
+                # 选出当前 token 中优先级最高的 pair 作为 merge 的目标
+                best_merge = min(pairs, key=lambda p: self.bpe_ranks.get(p, float("inf")))
+                # 如果当前 token 中没有可 merge 的 pair, 则结束当前 token 的 merge 过程
+                if best_merge not in self.bpe_ranks:
+                    break
+
+                # 进行 merge
+                token_bytes_list = merge_token(token_bytes_list, best_merge, self.merges_dict[best_merge])
 
             # 将 merge 后的 token 利用 vocab 转化为编码
             for merged in token_bytes_list:
