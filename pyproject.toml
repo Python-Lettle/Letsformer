@@ -12,6 +12,7 @@ dependencies = [
     "jaxtyping>=0.3.9",
     "rich>=15.0.0",
     "matplotlib>=3.10.9",
+    "tqdm>=4.67.3",
 ]
 
 [dependency-groups]

@@ -166,7 +166,7 @@ class LossMonitor:
         self.fig.canvas.draw()
         self.fig.canvas.flush_events()
     
-    def finalize(self):
+    def finalize(self, save_path="./data/model/loss_curve.png"):
         """完成训练，显示最终图表"""
         # 确保最后一次更新
         self._update_plot()
@@ -182,6 +182,6 @@ class LossMonitor:
             self.ax1.legend()
         
         # 保存一个 Loss 图
-        plot_loss_curve_basic(self.losses, title="Training Loss Curve", save_path="./data/model/loss_curve.png")
+        plot_loss_curve_basic(self.losses, title="Training Loss Curve", save_path=save_path)
 
         plt.show()
