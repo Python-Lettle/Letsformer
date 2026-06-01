@@ -115,24 +115,38 @@ def read_memmap_data(train_data_path: str | os.PathLike):
         mode="r",
     )
 
+def val_iterator(memmap_arr, batch_size, context_length):
+    N = len(memmap_arr)
+    nb = (N-context_length-1)//batch_size
+    for bi in range(nb):
+        base = bi*batch_size
+        x = np.stack([memmap_arr[i:i+context_length] for i in range(base, base+batch_size)])
+        y = np.stack([memmap_arr[i+1:i+context_length+1] for i in range(base, base+batch_size)])
+        yield torch.tensor(x, dtype=torch.long), torch.tensor(y, dtype=torch.long)
+
 def train_lm(model_params: dict):
     # 1. 准备训练参数
     train_data_path = model_params["train_data_path"]
+    valid_data_path = model_params["valid_data_path"]
+
     model_weights_path = model_params.get("model_weights_path", None)
     save_model_dir = model_params["save_model_dir"]
     
     device = torch.device("cuda")
     # device = torch.device("cpu")
     epochs: int = model_params["epochs"]
+    valid_interval: int = model_params["valid_interval"]
     lr: float = model_params["lr"]
     betas: tuple[float, float] = model_params["betas"]
     weight_decay: float = model_params["weight_decay"]
     
     console.print("Training data path:", train_data_path)
+    console.print("Validation data path:", valid_data_path)
     if model_weights_path is not None:
         console.print("Using model weights path:", model_weights_path)
     console.print("Save model dir:", save_model_dir)
     console.print("Epochs:", epochs)
+    console.print("Valid interval:", valid_interval)
     console.print("Device:", device)
     console.print("lr:", lr)
     console.print("betas:", betas)
@@ -161,7 +175,9 @@ def train_lm(model_params: dict):
     # 2. 加载数据集
     train_data_tokens = read_memmap_data(train_data_path)    # 一维数组
     console.print("train_data_tokens shape:", train_data_tokens.shape)
-    console.print("max token ID:", train_data_tokens.max())
+
+    valid_data_tokens = read_memmap_data(valid_data_path)    # 一维数组
+    console.print("valid_data_tokens shape:", valid_data_tokens.shape)
 
     # 3. 创建模型和优化器
     model = TransformerLM(
@@ -175,24 +191,23 @@ def train_lm(model_params: dict):
 
     optimizer = AdamW(model.parameters(), lr=lr, betas=betas, eps=1e-8, weight_decay=weight_decay)
 
-    loss_monitor = LossMonitor()
+    train_loss_monitor = LossMonitor(title="Train Loss Monitor")
+    valid_loss_monitor = LossMonitor(title="Valid Loss Monitor")
 
     # 4. 训练模型
     start_time = time.time()
-    model.train()
     for epoch in range(epochs):
-        if epoch % 50 == 0:
-            console.print(f"Epoch {epoch+1}/{epochs}")
-        
         try:
+            # ----------------------------------------
+            #                  Train
+            # ----------------------------------------
+            model.train()
             inputs, targets = data_loader(train_data_tokens, batch_size=batch_size, context_length=context_length, device=device)
 
-            assert inputs.max() < vocab_size
-            assert targets.max() < vocab_size
-
-            model.zero_grad()
             logits = model(inputs)
             loss = cross_entropy_loss(logits, targets)
+
+            optimizer.zero_grad()
             loss.backward()
 
             # 梯度裁剪
@@ -201,10 +216,10 @@ def train_lm(model_params: dict):
             # 学习率调度
             current_lr = cosine_schedule(
                 epoch,
-                max_learning_rate=0.01,
-                min_learning_rate=0.0001,
-                warmup_iters=10,
-                cosine_cycle_iters=100,
+                max_learning_rate=0.0001,
+                min_learning_rate=0.00001,
+                warmup_iters=500,
+                cosine_cycle_iters=10000,
             )
             for param_group in optimizer.param_groups:
                 param_group["lr"] = current_lr
@@ -213,13 +228,35 @@ def train_lm(model_params: dict):
 
             # 信息输出
 
-            loss_monitor.add_loss(epoch, loss.item())
+            train_loss_monitor.add_loss(epoch, loss.item())
 
             # 打印信息
             if epoch % 20 == 0:
+                console.print(f"Epoch {epoch+1}/{epochs}")
                 console.print(f"Loss: {loss.item():.4f}")
                 console.print("Epoch completed")
                 console.print("="*50)
+            
+            # ----------------------------------------
+            #                Validate
+            # ----------------------------------------
+            if epoch % valid_interval == 0:
+                model.eval()
+                with torch.no_grad():
+                    val_losses = []
+                    count = 0
+                    for inputs_val, targets_val in val_iterator(valid_data_tokens, batch_size, context_length):
+                        inputs_val, targets_val = inputs_val.to(device), targets_val.to(device)
+                        val_logits = model(inputs_val)
+                        val_loss = cross_entropy_loss(val_logits, targets_val)
+                        # 统计 val_loss
+                        val_losses.append(val_loss.item())
+                        count += 1
+                        if count >= 10:
+                            break
+                    val_loss_mean = np.mean(val_losses)
+                    valid_loss_monitor.add_loss(epoch, val_loss_mean)
+                    console.print(f"VALID mean loss: {val_loss_mean:.4f}")
 
 
         except AssertionError as e:
@@ -246,16 +283,20 @@ def train_lm(model_params: dict):
     torch.save(model.state_dict(), os.path.join(save_model_dir, "model_new.pt"))
 
     # 6. 绘制loss曲线
-    loss_monitor.finalize(os.path.join(save_model_dir, "loss_curve.png"))
+    train_loss_monitor.finalize(save_path=os.path.join(save_model_dir, "train_loss_curve.png"))
+    valid_loss_monitor.finalize(save_path=os.path.join(save_model_dir, "valid_loss_curve.png"))
+
 
 
 if __name__ == "__main__":
     model_params = {
         "train_data_path": "./data/tinystories_train.npy",
+        "valid_data_path": "./data/tinystories_valid.npy",
         # "model_weights_path": "",
         "save_model_dir": "./data/model/",
-        "epochs": 100,
-        "lr": 0.002,
+        "epochs": 6000,
+        "valid_interval": 100,
+        "lr": 0.0002,
         "betas": (0.9, 0.999),
         "weight_decay": 0.01,
 

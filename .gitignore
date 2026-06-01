@@ -217,8 +217,11 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Data
-data/
+# Model
+data/model/
+
+# Data Set
+*.npy
 
 # Tokenizer
 *.pkl

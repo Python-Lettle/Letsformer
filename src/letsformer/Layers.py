@@ -4,7 +4,7 @@ import torch.nn as nn
 from jaxtyping import Float, Int
 from torch import Tensor
 from einops import rearrange, einsum
-from letsformer.functions import silu, scaled_dot_product_attention
+from letsformer.functions import silu, softmax, scaled_dot_product_attention
 
 class Linear(nn.Module):
     def __init__(self, in_features: int, out_features: int, device: torch.device | None = None, dtype: torch.dtype | None = None, weight: Tensor | None = None):

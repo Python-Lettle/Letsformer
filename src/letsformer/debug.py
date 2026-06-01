@@ -44,7 +44,7 @@ def plot_loss_curve_basic(loss_list, title="Training Loss Curve", save_path=None
 class LossMonitor:
     """实时Loss监控器"""
     
-    def __init__(self, window_size=10, update_interval=0.1):
+    def __init__(self, title: str ="Loss Monitor", window_size=10, update_interval=0.1):
         """
         参数:
             window_size: 移动平均窗口大小
@@ -60,6 +60,7 @@ class LossMonitor:
         self.epochs = []
         self.losses = []
         self.moving_avg = []
+        self.title = title
         self.window_size = window_size
         
         # 创建线条
@@ -75,7 +76,7 @@ class LossMonitor:
                                         bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.5))
         
         # 设置图表属性
-        self.ax1.set_title('Loss Monitor', fontsize=14, fontweight='bold')
+        self.ax1.set_title(title, fontsize=14, fontweight='bold')
         self.ax1.set_xlabel('Epoch')
         self.ax1.set_ylabel('Loss')
         self.ax1.grid(True, alpha=0.3)
@@ -182,6 +183,6 @@ class LossMonitor:
             self.ax1.legend()
         
         # 保存一个 Loss 图
-        plot_loss_curve_basic(self.losses, title="Training Loss Curve", save_path=save_path)
+        plot_loss_curve_basic(self.losses, title=self.title, save_path=save_path)
 
         plt.show()
