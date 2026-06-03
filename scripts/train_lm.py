@@ -2,6 +2,7 @@ from letsformer import TransformerLM
 from letsformer.debug import console, DEBUG, LossMonitor
 from letsformer.optim import AdamW
 from letsformer.functions import cross_entropy_loss, cosine_schedule, gradient_clipping
+from letsformer.config import TrainConfig, DEFAULT_CONFIG
 import torch
 from typing import IO, BinaryIO
 from tqdm import tqdm
@@ -9,6 +10,7 @@ import numpy as np
 import numpy.typing as npt
 import os
 import time
+import argparse
 
 def data_loader(
     dataset: npt.NDArray,
@@ -124,21 +126,21 @@ def val_iterator(memmap_arr, batch_size, context_length):
         y = np.stack([memmap_arr[i+1:i+context_length+1] for i in range(base, base+batch_size)])
         yield torch.tensor(x, dtype=torch.long), torch.tensor(y, dtype=torch.long)
 
-def train_lm(model_params: dict):
+def train_lm(config: TrainConfig = DEFAULT_CONFIG):
     # 1. 准备训练参数
-    train_data_path = model_params["train_data_path"]
-    valid_data_path = model_params["valid_data_path"]
+    train_data_path = config.data.train_data_path
+    valid_data_path = config.data.valid_data_path
 
-    model_weights_path = model_params.get("model_weights_path", None)
-    save_model_dir = model_params["save_model_dir"]
+    model_weights_path = config.data.model_weights_path
+    save_model_dir = config.data.save_model_dir
+    os.makedirs(save_model_dir, exist_ok=True)
     
-    device = torch.device("cuda")
-    # device = torch.device("cpu")
-    epochs: int = model_params["epochs"]
-    valid_interval: int = model_params["valid_interval"]
-    lr: float = model_params["lr"]
-    betas: tuple[float, float] = model_params["betas"]
-    weight_decay: float = model_params["weight_decay"]
+    device = torch.device(config.system.device)
+    epochs: int = config.training.epochs
+    valid_interval: int = config.training.valid_interval
+    lr: float = config.training.lr
+    betas: tuple[float, float] = config.training.betas
+    weight_decay: float = config.training.weight_decay
     
     console.print("Training data path:", train_data_path)
     console.print("Validation data path:", valid_data_path)
@@ -152,15 +154,14 @@ def train_lm(model_params: dict):
     console.print("betas:", betas)
     console.print("weight_decay:", weight_decay)
     
-    vocab_size: int = model_params["vocab_size"]
-    context_length: int = model_params["context_length"]
-    d_model: int = model_params["d_model"]
-    num_layers: int = model_params["num_layers"]
-    num_heads: int = model_params["num_heads"]
-    d_ff: int = model_params["d_ff"]
-    rope_theta: float = model_params["rope_theta"]
-    max_seq_len: int = model_params["max_seq_len"]
-    batch_size: int = model_params["batch_size"]
+    vocab_size: int = config.model.vocab_size
+    context_length: int = config.model.context_length
+    d_model: int = config.model.d_model
+    num_layers: int = config.model.num_layers
+    num_heads: int = config.model.num_heads
+    d_ff: int = config.model.d_ff
+    rope_theta: float = config.model.rope_theta
+    batch_size: int = config.training.batch_size
 
     console.print("vocab_size:", vocab_size)
     console.print("context_length:", context_length)
@@ -169,7 +170,6 @@ def train_lm(model_params: dict):
     console.print("num_heads:", num_heads)
     console.print("d_ff:", d_ff)
     console.print("rope_theta:", rope_theta)
-    console.print("max_seq_len:", max_seq_len)
     console.print("batch_size:", batch_size)
 
     # 2. 加载数据集
@@ -181,8 +181,7 @@ def train_lm(model_params: dict):
 
     # 3. 创建模型和优化器
     model = TransformerLM(
-        vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta,
-        max_seq_len, batch_size,
+        vocab_size, context_length, d_model, num_layers, num_heads, d_ff, rope_theta, batch_size,
         device=device,
     ).to(device)
 
@@ -211,15 +210,15 @@ def train_lm(model_params: dict):
             loss.backward()
 
             # 梯度裁剪
-            gradient_clipping(model.parameters(), 1.0)
+            gradient_clipping(model.parameters(), config.training.gradient_clip)
 
             # 学习率调度
             current_lr = cosine_schedule(
                 epoch,
-                max_learning_rate=0.0001,
-                min_learning_rate=0.00001,
-                warmup_iters=500,
-                cosine_cycle_iters=10000,
+                max_learning_rate=config.scheduler.max_learning_rate,
+                min_learning_rate=config.scheduler.min_learning_rate,
+                warmup_iters=config.scheduler.warmup_iters,
+                cosine_cycle_iters=config.scheduler.cosine_cycle_iters,
             )
             for param_group in optimizer.param_groups:
                 param_group["lr"] = current_lr
@@ -231,7 +230,7 @@ def train_lm(model_params: dict):
             train_loss_monitor.add_loss(epoch, loss.item())
 
             # 打印信息
-            if epoch % 20 == 0:
+            if epoch % config.training.print_interval == 0:
                 console.print(f"Epoch {epoch+1}/{epochs}")
                 console.print(f"Loss: {loss.item():.4f}")
                 console.print("Epoch completed")
@@ -255,14 +254,24 @@ def train_lm(model_params: dict):
                         if count >= 10:
                             break
                     val_loss_mean = np.mean(val_losses)
-                    valid_loss_monitor.add_loss(epoch, val_loss_mean)
+                    is_min_loss = valid_loss_monitor.add_loss(epoch, val_loss_mean)
                     console.print(f"VALID mean loss: {val_loss_mean:.4f}")
+
+                    if is_min_loss:
+                        torch.save(model.state_dict(), os.path.join(save_model_dir, "model_best.pt"))
 
 
         except AssertionError as e:
             console.print(f"AssertionError in epoch {epoch+1}: {e}")
             console.print(f"Max token ID: {inputs.max()}")
             console.print(f"Max token ID: {targets.max()}")
+            # 保存 checkpoint
+            save_checkpoint(model, optimizer, epoch, os.path.join(save_model_dir, "checkpoint.pt"))
+            console.print(f"Checkpoint saved at epoch {epoch+1}")
+            console.print("="*50)
+            return
+        except KeyboardInterrupt:
+            console.print(f"KeyboardInterrupt in epoch {epoch+1}")
             # 保存 checkpoint
             save_checkpoint(model, optimizer, epoch, os.path.join(save_model_dir, "checkpoint.pt"))
             console.print(f"Checkpoint saved at epoch {epoch+1}")
@@ -275,6 +284,7 @@ def train_lm(model_params: dict):
             console.print(f"Checkpoint saved at epoch {epoch+1}")
             console.print("="*50)
             return
+        
         
     end_time = time.time()
     console.print(f"Training time: {end_time - start_time:.2f} seconds")
@@ -289,25 +299,14 @@ def train_lm(model_params: dict):
 
 
 if __name__ == "__main__":
-    model_params = {
-        "train_data_path": "./data/tinystories_train.npy",
-        "valid_data_path": "./data/tinystories_valid.npy",
-        # "model_weights_path": "",
-        "save_model_dir": "./data/model/",
-        "epochs": 6000,
-        "valid_interval": 100,
-        "lr": 0.0002,
-        "betas": (0.9, 0.999),
-        "weight_decay": 0.01,
-
-        "vocab_size": 10000,
-        "context_length": 256,
-        "d_model": 512,
-        "num_layers": 4,
-        "num_heads": 16,
-        "d_ff": 1344,
-        "rope_theta": 10000,
-        "max_seq_len": 256,
-        "batch_size": 32,
-    }
-    train_lm(model_params)
+    parser = argparse.ArgumentParser(description="Train Language Model")
+    parser.add_argument("--config", help="Path to config JSON file")
+    args = parser.parse_args()
+    
+    # 加载配置
+    if args.config:
+        config = TrainConfig.from_json(args.config)
+    else:
+        config = DEFAULT_CONFIG
+    
+    train_lm(config)

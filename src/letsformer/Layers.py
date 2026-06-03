@@ -283,7 +283,6 @@ class TransformerLM(nn.Module):
         num_heads: int,
         d_ff: int,
         rope_theta: float,
-        max_seq_len: int,
         batch_size: int,
         weights: dict[str, Tensor] | None = None,
         device: torch.device = None,
@@ -314,9 +313,6 @@ class TransformerLM(nn.Module):
             rope_theta (float): 
                 含义：旋转位置编码（RoPE）的基数参数
                 作用：控制位置编码的频率分量，默认值通常为10000，影响位置信息的编码方式
-            max_seq_len (int): 
-                含义：预计算位置编码的最大序列长度
-                作用：RoPE需预计算正弦/余弦值缓冲区，此参数定义缓冲区大小以支持长序列
             batch_size (int): 
                 含义：单次训练迭代中输入的样本数
                 作用：影响训练效率与内存占用，较大的 batch_size 可提升硬件利用率但增加内存需求
@@ -328,7 +324,6 @@ class TransformerLM(nn.Module):
         self.num_heads = num_heads
         self.d_ff = d_ff
         self.rope_theta = rope_theta
-        self.max_seq_len = max_seq_len
         self.batch_size = batch_size
         self.vocab_size = vocab_size
         self.device = device
@@ -412,19 +407,19 @@ class TransformerLM(nn.Module):
         X: torch.Tensor,
         max_tokens: int,
         temperature: float = 1.0,
-        top_p: int | None = None,
+        top_k: int | None = None,
         eos_token_id: int | None = None,
     ):
         """
         Args:
             X: LongTensor of shape `(1, sequence_length,)` or `(sequence_length, )`.
                 Input IDs to condition on when generating.
-            max_new_tokens: int
+            max_tokens: int
                 Maximum number of tokens to generate.
             temperature: float
                 Temperature to use during generation.
-            top_p: int
-                If provided, only sample from the `top_p` vocab items (by probability).
+            top_k: int
+                If provided, only sample from the `top_k` vocab items (by probability).
             eos_token_id: int
                 If provided, stop generation when we generate this ID.
 
@@ -444,16 +439,16 @@ class TransformerLM(nn.Module):
             next_token_logits = logits[:, -1]
             # 应用温度缩放
             temperature_scaled_next_token_logits = next_token_logits / temperature
-            # 如果提供了 top-p，只考虑 top-p 个 token
-            if top_p:
+            # 如果提供了 top-k，只考虑 top-k 个 token
+            if top_k:
                 topk_values, _ = torch.topk(
                     temperature_scaled_next_token_logits,
-                    min(top_p, temperature_scaled_next_token_logits.size(-1)),
+                    min(top_k, temperature_scaled_next_token_logits.size(-1)),
                 )
-                # 获取 top-p 个 token 中分数最高的 token 的分数
+                # 获取 top-k 个 token 中分数最高的 token 的分数
                 threshold = topk_values[:, -1]
-                top_p_mask = temperature_scaled_next_token_logits < threshold
-                temperature_scaled_next_token_logits.masked_fill(top_p_mask, float("-inf"))
+                top_k_mask = temperature_scaled_next_token_logits < threshold
+                temperature_scaled_next_token_logits.masked_fill(top_k_mask, float("-inf"))
             next_token_probabilities = softmax(temperature_scaled_next_token_logits, dim=-1)
             next_token_id = torch.multinomial(next_token_probabilities, 1)
             # 遇到 EOS token, 停止生成

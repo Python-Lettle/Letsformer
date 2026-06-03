@@ -63,6 +63,14 @@ class LossMonitor:
         self.title = title
         self.window_size = window_size
         
+        # 预计算统计变量，避免重复计算
+        self.min_loss = float('inf')
+        self.max_loss = float('-inf')
+        self.sum_loss = 0.0
+        self.sum_squared_loss = 0.0
+        self.count = 0
+        self.first_loss = None
+        
         # 创建线条
         self.loss_line, = self.ax1.plot([], [], 'b-', linewidth=1.5, alpha=0.7, label='Loss')
         self.avg_line, = self.ax1.plot([], [], 'r-', linewidth=2, label=f'{window_size}-Epoch MA')
@@ -100,17 +108,21 @@ class LossMonitor:
     
     def _update_stats_text(self):
         """更新统计信息文本"""
-        if len(self.losses) == 0:
+        if self.count == 0:
             return
         
+        avg_loss = self.sum_loss / self.count
+        variance = (self.sum_squared_loss / self.count) - (avg_loss ** 2)
+        std_loss = variance ** 0.5
+        
         stats = [
-            f"Current Epoch: {len(self.losses)}",
+            f"Current Epoch: {self.count}",
             f"Current Loss: {self.losses[-1]:.6f}",
-            f"Min Loss: {min(self.losses):.6f}",
-            f"Max Loss: {max(self.losses):.6f}",
-            f"Average Loss: {np.mean(self.losses):.6f}",
-            f"Loss Std: {np.std(self.losses):.6f}",
-            f"Loss Rate: {100*(self.losses[0]-self.losses[-1])/self.losses[0]:.2f}%"
+            f"Min Loss: {self.min_loss:.6f}",
+            f"Max Loss: {self.max_loss:.6f}",
+            f"Average Loss: {avg_loss:.6f}",
+            f"Loss Std: {std_loss:.6f}",
+            f"Loss Rate: {100*(self.first_loss-self.losses[-1])/self.first_loss:.2f}%"
         ]
         
         if len(self.moving_avg) > 0:
@@ -118,10 +130,23 @@ class LossMonitor:
         
         self.stats_text.set_text('\n'.join(stats))
     
-    def add_loss(self, epoch, loss):
-        """添加Loss数据"""
+    def add_loss(self, epoch, loss) -> bool:
+        """添加Loss数据, 返回是否为最小Loss"""
         self.epochs.append(epoch)
         self.losses.append(loss)
+        
+        # 实时更新统计变量
+        if self.first_loss is None:
+            self.first_loss = loss
+        self.sum_loss += loss
+        self.sum_squared_loss += loss * loss
+        self.count += 1
+        
+        is_min_loss = loss < self.min_loss
+        if is_min_loss:
+            self.min_loss = loss
+        if loss > self.max_loss:
+            self.max_loss = loss
         
         # 计算移动平均
         avg = self._calculate_moving_average()
@@ -133,6 +158,8 @@ class LossMonitor:
         if current_time - self.last_update_time >= self.update_interval:
             self._update_plot()
             self.last_update_time = current_time
+        
+        return is_min_loss
     
     def _update_plot(self):
         """更新图表"""
@@ -156,8 +183,8 @@ class LossMonitor:
         # 调整坐标轴范围
         if len(self.epochs) > 1:
             self.ax1.set_xlim(0, max(self.epochs) * 1.05)
-            y_min = min(self.losses) * 0.95
-            y_max = max(self.losses) * 1.05
+            y_min = self.min_loss * 0.95
+            y_max = self.max_loss * 1.05
             self.ax1.set_ylim(y_min, y_max)
         
         # 更新统计信息
